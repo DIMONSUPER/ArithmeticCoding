@@ -55,15 +55,15 @@ namespace Lab_1_6_Arithmetic_
         {
             #region -- Private helpers --
 
-            private const int _chunkSize = 14;
+            private const int _chunkSize = 6;
 
             private string _path;
 
-            private Dictionary<byte, decimal> _FrequencyTable;
+            private Dictionary<byte, double> _FrequencyTable;
 
-            private Dictionary<byte, decimal> _CummulativeFreqTable;
+            private Dictionary<byte, double> _CummulativeFreqTable;
 
-            private Dictionary<byte, (decimal LowerBound, decimal UpperBound)> _IntervalTable;
+            private Dictionary<byte, (double LowerBound, double UpperBound)> _IntervalTable;
 
             #endregion
 
@@ -76,38 +76,38 @@ namespace Lab_1_6_Arithmetic_
 
             public void EncodeDecod(ECodingMode mode = ECodingMode.Encoding, string output = "")
             {
-                if(string.IsNullOrWhiteSpace(output))
+                if (string.IsNullOrWhiteSpace(output)) 
                 {
                     output = mode == ECodingMode.Encoding ? "encoded" : "decoded";
                 }
 
                 if (mode == ECodingMode.Encoding)
                 {
-                    var bytesArray = File.ReadAllBytes(_path);
+                    var bytesArray = File.ReadAllBytes("file.txt");
 
                     InitForEncoding(bytesArray);
 
-                    var msg = GetFrequencyTableAsString() + GetEncodedMessage(bytesArray);
-                    var bytes = Encoding.UTF8.GetBytes(msg);
+                    var size = BitConverter.GetBytes(GetFrequencyTableAsBytes().Length);
 
-                    File.WriteAllBytes(output, bytes);
+                    var msg = size.Concat(GetFrequencyTableAsBytes().Concat(GetEncodedMessage(bytesArray))).ToArray();
+
+                    File.WriteAllBytes(output, msg);
                 }
                 else if (mode == ECodingMode.Decoding)
                 {
                     var bytesArray = File.ReadAllBytes(_path);
 
-                    var str = Encoding.UTF8.GetString(bytesArray);
-                    var last = str.LastIndexOf(':');
-                    var dict = str.Substring(0, last);
-                    var msg = str.Substring(last + 1);
+                    var size = BitConverter.ToInt32(bytesArray.Take(4).ToArray(), 0);
 
-                    InitForDecoding(dict);
+                    var dict = bytesArray.Skip(4).Take(size).ToArray();
 
-                    var a = GetDecodedMessage(msg, dict);
+                    InitForDecoding(dict, size);
 
-                    var bytes = Encoding.UTF8.GetBytes(a);
+                    var msg = bytesArray.Skip(dict.Count() + 4).ToArray();
 
-                    File.WriteAllBytes(output, bytes);
+                    var a = GetDecodedMessage(msg, dict, size);
+
+                    File.WriteAllBytes(output, a);
                 }
             }
 
@@ -115,57 +115,47 @@ namespace Lab_1_6_Arithmetic_
 
             #region -- Private methods --
 
-            private string GetDecodedMessage(string msg, string freqTableAsString)
+            private byte[] GetDecodedMessage(byte[] msg, byte[] dict, int size)
             {
-                IList<string> tmpList = new List<string>();
+                List<byte> tmpList = new List<byte>();
+                var sizeOfLastChunk = msg[msg.Length - 1];
 
-                var chunks = msg.Split('\n');
-
-                foreach (var chunk in chunks)
+                for (int i = 0; i < msg.Length - 1; i += 8)
                 {
-                    if (chunk.Contains('^'))
-                    {
-                        var arr = chunk.Split('^');
+                    byte[] decodedChunk;
+                    var chunk = msg.Slice(i, sizeof(double));
 
-                        tmpList.Add(GetDecodedMessageForChunk(decimal.Parse(arr[0]), int.Parse(arr[1])));
+                    if (i + 8 >= msg.Length - 1)
+                    {
+                        decodedChunk = GetDecodedMessageForChunk(chunk, sizeOfLastChunk);
                     }
                     else
                     {
-                        tmpList.Add(GetDecodedMessageForChunk(decimal.Parse(chunk)));
+                        decodedChunk = GetDecodedMessageForChunk(chunk);
                     }
 
-                    InitForDecoding(freqTableAsString);
+                    tmpList.AddRange(decodedChunk);
+                    InitIntervalTable();
                 }
-                return string.Join(string.Empty, tmpList.ToArray());
+
+                return tmpList.ToArray();
             }
 
-            private string GetEncodedMessage(byte[] bytesArray)
+            private IEnumerable<byte> GetEncodedMessage(byte[] bytesArray)
             {
-                var stringToEncode = Encoding.UTF8.GetString(bytesArray, 0, bytesArray.Length);
+                var chunks = GetChunks(bytesArray);
 
-                var chunks = GetChunks(stringToEncode);
-
-                IList<string> tmpList = new List<string>();
+                List<byte> tmpList = new List<byte>();
 
                 for (int i = 0; i < chunks.Length; i++)
                 {
-                    if (i + 1 < chunks.Length)
-                    {
-                        tmpList.Add(GetEncodedMessageFromChunk(chunks[i]) + '\n');
-                    }
-                    else
-                    {
-                        tmpList.Add(GetEncodedMessageFromChunk(chunks[i]));
-                    }
-
-                    //if chunk size is less then needed
-                    if (chunks[i].Length < _chunkSize)
-                    {
-                        tmpList.Add($"^{chunks[i].Length}");
-                    }
+                    tmpList.AddRange(GetEncodedMessageFromChunk(chunks[i]));
                 }
 
-                return string.Join(string.Empty, tmpList.ToArray());
+                //size of last chunk
+                tmpList.Add((byte)chunks.Last().Length);
+
+                return tmpList;
             }
 
             private void InitForEncoding(byte[] bytesArray)
@@ -177,115 +167,104 @@ namespace Lab_1_6_Arithmetic_
                 InitIntervalTable();
             }
 
-            private void InitForDecoding(string freqTableAsString)
+            private void InitForDecoding(byte[] dic, int size)
             {
-                InitFrequencyTableFromString(freqTableAsString);
+                InitFrequencyTableFromBytes(dic, size);
 
                 InitCummulativeTable();
 
                 InitIntervalTable();
             }
 
-            private string GetDecodedMessageForChunk(decimal msg, int chunkSize = _chunkSize)
+            private byte[] GetDecodedMessageForChunk(byte[] msg, byte size = _chunkSize)
             {
-                IList<char> result = new List<char>();
+                IList<byte> result = new List<byte>();
                 var keysList = _IntervalTable.Keys.ToList();
+                var message = BitConverter.ToDouble(msg, 0);
 
                 var i = 0;
 
-                while (i < chunkSize)
+                while (i < size)
                 {
                     var index = 0;
 
                     var interval = _IntervalTable[keysList[index]];
 
-                    while (msg > interval.UpperBound)
+                    while (message > interval.UpperBound)
                     {
                         index++;
                         interval = _IntervalTable[keysList[index]];
                     }
 
-                    result.Add(Convert.ToChar(keysList[index]));
+                    result.Add(keysList[index]);
                     UpdateIntervalTable(interval);
 
                     i++;
                 }
 
-                return string.Join(string.Empty, result.ToArray());
+                return result.ToArray();
             }
 
-            private string GetEncodedMessageFromChunk(string msg)
+            private byte[] GetEncodedMessageFromChunk(byte[] msg)
             {
-                var interval = (0m, 0m);
+                var interval = (0d, 0d);
 
-                foreach (var ch in msg)
+                for (byte i = 0; i < msg.Length; i++)
                 {
-                    interval = _IntervalTable[Convert.ToByte(ch)];
+                    interval = _IntervalTable[msg[i]];
                     UpdateIntervalTable(interval);
                 }
 
-                var result = (interval.Item1 + interval.Item2) / 2;
-
                 InitIntervalTable();
-                return result.ToString();
+                return BitConverter.GetBytes((interval.Item1 + interval.Item2) / 2);
             }
 
-            private string[] GetChunks(string str)
+            private byte[][] GetChunks(byte[] str)
             {
-                IList<string> result = new List<string>();
+                IList<IEnumerable<byte>> result = new List<IEnumerable<byte>>();
 
-                for (int i = 0; i < str.Length; i++)
+                for (int i = 0; i < str.Length; i += _chunkSize)
                 {
-                    if (i + _chunkSize >= str.Length)
+                    if (str.Length - i < _chunkSize)
                     {
-                        result.Add(str.Substring(i));
-                        i += str.Substring(i).Length;
+                        result.Add(str.Slice(i, str.Length - i));
                     }
                     else
                     {
-                        result.Add(str.Substring(i, _chunkSize));
-                        i += _chunkSize - 1;
+                        result.Add(str.Slice(i, _chunkSize));
                     }
+                }
+
+                return result.Select(x => x.ToArray()).ToArray();
+            }
+
+            private byte[] GetFrequencyTableAsBytes()
+            {
+                IList<byte> result = new List<byte>();
+
+                foreach (var pair in _FrequencyTable)
+                {
+                    result.Add(pair.Key);
+                    result = result.Concat(BitConverter.GetBytes(pair.Value)).ToList();
                 }
 
                 return result.ToArray();
             }
 
-            private string GetFrequencyTableAsString()
+            private void InitFrequencyTableFromBytes(byte[] dic, int size)
             {
-                IList<string> result = new List<string>();
+                _FrequencyTable = new Dictionary<byte, double>();
 
-                foreach (var pair in _FrequencyTable)
+                for (int i = 0; i < size; i++)
                 {
-                    result.Add(Convert.ToChar(pair.Key) + pair.Value.ToString() + ":");
+                    var key = dic[i];
+                    var value = BitConverter.ToDouble(dic.Skip(i + 1).Take(sizeof(double)).ToArray(), 0);
+                    i += sizeof(double);
+                    _FrequencyTable[key] = value;
                 }
-
-                return string.Join(string.Empty, result.ToArray());
             }
 
-            private void InitFrequencyTableFromString(string st)
-            {
-                Dictionary<byte, decimal> result = new Dictionary<byte, decimal>();
-
-                var s = st.Split(':');
-
-                for (int i = 0; i < s.Length; i++)
-                {
-                    if (!string.IsNullOrEmpty(s[i]))
-                    {
-                        result[Convert.ToByte(s[i][0])] = decimal.Parse(s[i].Substring(1));
-                    }
-                    else if (i + 1 < s.Length)
-                    {
-                        i++;
-                        result[Convert.ToByte(':')] = decimal.Parse(s[i].Substring(1));
-                    }
-                }
-
-                _FrequencyTable = result;
-            }
-
-            private void UpdateIntervalTable((decimal LowerBound, decimal UpperBound) interval)
+            private void UpdateIntervalTable((double LowerBound, double UpperBound) interval)
             {
                 var keysList = _IntervalTable.Keys.ToList();
                 var d = interval.UpperBound - interval.LowerBound;
@@ -294,20 +273,18 @@ namespace Lab_1_6_Arithmetic_
                 {
                     if (i == 0)
                     {
-                        var newValue = interval.LowerBound + d * _FrequencyTable[keysList[i]];
-                        _IntervalTable[keysList[i]] = (interval.LowerBound, newValue);
+                        _IntervalTable[keysList[i]] = (interval.LowerBound, interval.LowerBound + d * _FrequencyTable[keysList[i]]);
                     }
                     else
                     {
-                        decimal newValue = _IntervalTable[keysList[i - 1]].UpperBound + d * _FrequencyTable[keysList[i]];
-                        _IntervalTable[keysList[i]] = (_IntervalTable[keysList[i - 1]].UpperBound, newValue);
+                        _IntervalTable[keysList[i]] = (_IntervalTable[keysList[i - 1]].UpperBound, _IntervalTable[keysList[i - 1]].UpperBound + d * _FrequencyTable[keysList[i]]);
                     }
                 }
             }
 
             private void InitIntervalTable()
             {
-                _IntervalTable = new Dictionary<byte, (decimal, decimal)>();
+                _IntervalTable = new Dictionary<byte, (double, double)>();
 
                 var keysList = _FrequencyTable.Keys.ToList();
 
@@ -315,7 +292,7 @@ namespace Lab_1_6_Arithmetic_
                 {
                     if (i == 0)
                     {
-                        _IntervalTable[keysList[i]] = (0m, _CummulativeFreqTable[keysList[i]]);
+                        _IntervalTable[keysList[i]] = (0d, _CummulativeFreqTable[keysList[i]]);
                     }
                     else
                     {
@@ -326,9 +303,9 @@ namespace Lab_1_6_Arithmetic_
 
             private void InitCummulativeTable()
             {
-                _CummulativeFreqTable = new Dictionary<byte, decimal>();
+                _CummulativeFreqTable = new Dictionary<byte, double>();
 
-                var sum = 0m;
+                var sum = 0d;
 
                 foreach (var key in _FrequencyTable.Keys.ToList())
                 {
@@ -337,34 +314,26 @@ namespace Lab_1_6_Arithmetic_
                 }
             }
 
-            private void NormalizeIfSumNotOne(decimal sum)
+            private void NormalizeIfSumNotOne(double sum)
             {
                 if (sum != 1)
                 {
                     var dif = 1 - sum;
-                    var s = 0m;
-                    foreach (var key in _FrequencyTable.Keys.ToList())
-                    {
-                        _FrequencyTable[key] += dif / _FrequencyTable.Count;
-                        s += _FrequencyTable[key];
-                    }
-
-
+                    _FrequencyTable[_FrequencyTable.Keys.ToList()[0]] += dif;
                 }
             }
 
             private void InitFrequencyTable(byte[] bytesArray)
             {
-                _FrequencyTable = new Dictionary<byte, decimal>();
+                _FrequencyTable = new Dictionary<byte, double>();
 
-                var sum = 0m;
+                var sum = 0d;
 
                 var keys = bytesArray.Distinct();
 
                 foreach (var key in keys)
                 {
-                    _FrequencyTable[key] = Convert.ToDecimal(bytesArray.Where(b => b == key).Count()) / bytesArray.Count();
-
+                    _FrequencyTable[key] = 1d / keys.Count();
                     sum += _FrequencyTable[key];
                 }
 
